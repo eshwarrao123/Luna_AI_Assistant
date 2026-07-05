@@ -39,3 +39,33 @@ def init_db() -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def save_message(session_id: str, role: str, content: str) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO conversations (role, content, session_id) VALUES (?, ?, ?)",
+            (role, content, session_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_recent_messages(session_id: str, limit: int = 10) -> list[dict]:
+    """Return the last `limit` messages for a session in chronological order."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT role, content FROM conversations
+            WHERE session_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (session_id, limit),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]

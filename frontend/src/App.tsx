@@ -1,93 +1,103 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useChat } from "./hooks/useChat";
+import ChatMessage from "./components/ChatMessage";
+import MessageInput from "./components/MessageInput";
 
 const BACKEND_URL = "http://localhost:8000";
 
-interface ChatEntry {
-  role: "user" | "luna";
-  content: string;
-}
-
 function App() {
-  const [input, setInput] = useState("");
-  const [messages, setMessages] = useState<ChatEntry[]>([]);
-  const [loading, setLoading] = useState(false);
+  const { messages, sendMessage, isLoading, resetChat } = useChat();
+  const [connected, setConnected] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
-  const sendMessage = async () => {
-    const text = input.trim();
-    if (!text || loading) return;
+  // Health check for status indicator
+  useEffect(() => {
+    let active = true;
+    const check = async () => {
+      try {
+        const res = await fetch(`${BACKEND_URL}/health`);
+        const data = await res.json();
+        if (active) setConnected(data.status === "ok");
+      } catch {
+        if (active) setConnected(false);
+      }
+    };
+    check();
+    const interval = setInterval(check, 5000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, []);
 
-    setMessages((prev) => [...prev, { role: "user", content: text }]);
-    setInput("");
-    setLoading(true);
+  // Auto-scroll to bottom on new content
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+  }, [messages]);
 
-    try {
-      const res = await fetch(`${BACKEND_URL}/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text })
-      });
-      const data = await res.json();
-      setMessages((prev) => [...prev, { role: "luna", content: data.response }]);
-    } catch (err) {
-      setMessages((prev) => [
-        ...prev,
-        { role: "luna", content: "Error: could not reach backend." }
-      ]);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter") sendMessage();
-  };
+  const lastIndex = messages.length - 1;
 
   return (
-    <div className="flex h-screen">
+    <div className="flex h-screen bg-[#0f0f0f] text-gray-100">
       {/* Sidebar */}
-      <aside className="w-[260px] shrink-0 bg-[#161616] border-r border-gray-800 p-4">
-        <h2 className="text-lg font-semibold mb-4">Luna</h2>
-        <nav className="text-sm text-gray-400 space-y-2">
-          <div className="px-2 py-1 rounded bg-[#222] text-gray-200">New Chat</div>
-        </nav>
+      <aside className="w-[260px] shrink-0 bg-[#141414] border-r border-gray-800 flex flex-col">
+        <div className="p-4">
+          <button
+            onClick={resetChat}
+            className="w-full text-left px-3 py-2 rounded-lg bg-[#222] hover:bg-[#2a2a2a] transition-colors text-sm font-medium"
+          >
+            + New Chat
+          </button>
+        </div>
+        <div className="px-4 text-xs uppercase tracking-wide text-gray-500 mb-2">
+          History
+        </div>
+        <div className="flex-1 overflow-y-auto px-3 space-y-1 text-sm text-gray-400">
+          <div className="px-2 py-1.5 rounded hover:bg-[#1c1c1c] cursor-default truncate">
+            Current session
+          </div>
+        </div>
       </aside>
 
-      {/* Main chat area */}
-      <main className="flex flex-col flex-1">
-        <header className="px-6 py-4 border-b border-gray-800">
-          <h1 className="text-xl font-semibold">Luna Assistant</h1>
+      {/* Main */}
+      <main className="flex-1 flex flex-col min-w-0">
+        <header className="flex items-center gap-3 px-6 py-4 border-b border-gray-800">
+          <h1 className="text-lg font-semibold">Luna</h1>
+          <span className="flex items-center gap-1.5 text-xs text-gray-400">
+            <span
+              className={`h-2 w-2 rounded-full ${
+                connected ? "bg-green-500" : "bg-gray-600"
+              }`}
+            />
+            {connected ? "Connected" : "Offline"}
+          </span>
         </header>
 
-        <div className="flex-1 overflow-y-auto p-6 space-y-3">
-          {messages.map((m, i) => (
-            <div
-              key={i}
-              className={m.role === "user" ? "text-gray-100" : "text-emerald-300"}
-            >
-              <span className="font-medium mr-2">
-                {m.role === "user" ? "You:" : "Luna:"}
-              </span>
-              {m.content}
+        {messages.length === 0 ? (
+          <div className="flex-1 flex items-center justify-center">
+            <p className="text-gray-500 text-lg">
+              What can I help you with today?
+            </p>
+          </div>
+        ) : (
+          <div ref={scrollRef} className="flex-1 overflow-y-auto">
+            <div className="max-w-3xl mx-auto px-6 py-6 space-y-4">
+              {messages.map((m, i) => (
+                <ChatMessage
+                  key={m.id}
+                  role={m.role}
+                  content={m.content}
+                  isStreaming={
+                    m.role === "assistant" && i === lastIndex && isLoading
+                  }
+                />
+              ))}
             </div>
-          ))}
-          {loading && <div className="text-gray-500">Luna is thinking…</div>}
-        </div>
+          </div>
+        )}
 
-        <div className="p-4 border-t border-gray-800 flex gap-2">
-          <input
-            className="flex-1 rounded bg-[#1a1a1a] border border-gray-700 px-3 py-2 outline-none focus:border-gray-500"
-            placeholder="Message Luna…"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-          />
-          <button
-            onClick={sendMessage}
-            disabled={loading}
-            className="rounded bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 px-4 py-2 font-medium"
-          >
-            Send
-          </button>
+        <div className="max-w-3xl w-full mx-auto">
+          <MessageInput onSend={sendMessage} disabled={isLoading} />
         </div>
       </main>
     </div>

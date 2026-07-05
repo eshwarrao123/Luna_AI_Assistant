@@ -5,9 +5,9 @@
   "author": "Luna",
   "main": "dist-electron/main.js",
   "scripts": {
-    "dev": "concurrently -k \"vite\" \"wait-on http://localhost:3000 && npm run electron:dev\"",
+    "dev": "concurrently -k \"vite --config frontend/vite.config.ts\" \"wait-on http://localhost:3000 && npm run electron:dev\"",
     "electron:dev": "tsc -p tsconfig.electron.json && cross-env NODE_ENV=development electron .",
-    "build": "tsc && vite build && tsc -p tsconfig.electron.json && electron-builder",
+    "build": "tsc && vite build --config frontend/vite.config.ts && tsc -p tsconfig.electron.json && electron-builder",
     "server": "cd backend && uvicorn main:app --reload --port 8000"
   },
   "dependencies": {
