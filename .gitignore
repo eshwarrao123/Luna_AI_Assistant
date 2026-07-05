@@ -1,0 +1,9 @@
+node_modules/
+dist/
+dist-electron/
+release/
+__pycache__/
+*.pyc
+backend/luna.db
+.venv/
+.DS_Store
