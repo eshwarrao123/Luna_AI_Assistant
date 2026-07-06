@@ -4,6 +4,16 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   id: string;
+  type?: "text" | "action";
+  tool?: string;
+  params?: Record<string, unknown>;
+  success?: boolean;
+}
+
+export interface PendingAction {
+  action: string;
+  params: Record<string, unknown>;
+  description: string;
 }
 
 const BACKEND_URL = "http://localhost:8000";
@@ -16,11 +26,15 @@ export function useChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  const [showPermission, setShowPermission] = useState(false);
 
   const resetChat = useCallback(() => {
     setMessages([]);
     setError(null);
     setIsLoading(false);
+    setPendingAction(null);
+    setShowPermission(false);
   }, []);
 
   const sendMessage = useCallback(
@@ -40,7 +54,7 @@ export function useChat() {
       setMessages((prev) => [
         ...prev,
         userMsg,
-        { role: "assistant", content: "", id: assistantId },
+        { role: "assistant", content: "", id: assistantId, type: "text" },
       ]);
 
       const appendToAssistant = (chunk: string) => {
@@ -48,6 +62,12 @@ export function useChat() {
           prev.map((m) =>
             m.id === assistantId ? { ...m, content: m.content + chunk } : m
           )
+        );
+      };
+
+      const removeEmptyAssistant = () => {
+        setMessages((prev) =>
+          prev.filter((m) => !(m.id === assistantId && m.content === ""))
         );
       };
 
@@ -63,9 +83,9 @@ export function useChat() {
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
+        let stop = false;
 
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
+        while (!stop) {
           const { done, value } = await reader.read();
           if (done) break;
 
@@ -78,15 +98,32 @@ export function useChat() {
             if (!line.startsWith("data:")) continue;
             const payload = line.slice(5).trim();
             if (!payload) continue;
+
+            let data: any;
             try {
-              const data = JSON.parse(payload);
-              if (data.done) {
-                setIsLoading(false);
-              } else if (typeof data.content === "string") {
-                appendToAssistant(data.content);
-              }
+              data = JSON.parse(payload);
             } catch {
-              // ignore malformed chunk
+              continue;
+            }
+
+            if (data.type === "permission_request") {
+              // Tool intent detected — remove the empty placeholder,
+              // open the permission dialog, and stop reading.
+              removeEmptyAssistant();
+              setPendingAction(data.action as PendingAction);
+              setShowPermission(true);
+              setIsLoading(false);
+              stop = true;
+              try {
+                await reader.cancel();
+              } catch {
+                /* ignore */
+              }
+              break;
+            } else if (data.type === "done") {
+              setIsLoading(false);
+            } else if (data.type === "chunk" && typeof data.content === "string") {
+              appendToAssistant(data.content);
             }
           }
         }
@@ -102,5 +139,73 @@ export function useChat() {
     [isLoading]
   );
 
-  return { messages, sendMessage, isLoading, error, resetChat };
+  const handlePermission = useCallback(
+    async (allowed: boolean) => {
+      const action = pendingAction;
+      setShowPermission(false);
+      setPendingAction(null);
+
+      if (!action) return;
+
+      if (!allowed) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: "I won't do that without your permission.",
+            id: makeId(),
+            type: "text",
+          },
+        ]);
+        return;
+      }
+
+      try {
+        const res = await fetch(`${BACKEND_URL}/execute`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            tool: action.action,
+            params: action.params,
+          }),
+        });
+        const result = await res.json();
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: result.message,
+            id: makeId(),
+            type: "action",
+            tool: action.action,
+            params: action.params,
+            success: result.success,
+          },
+        ]);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "execution failed";
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: `[Luna: could not execute action: ${msg}]`,
+            id: makeId(),
+            type: "text",
+          },
+        ]);
+      }
+    },
+    [pendingAction]
+  );
+
+  return {
+    messages,
+    sendMessage,
+    isLoading,
+    error,
+    resetChat,
+    pendingAction,
+    showPermission,
+    handlePermission,
+  };
 }

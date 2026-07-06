@@ -1,10 +1,40 @@
+import ActionCard from "./ActionCard";
+
 interface ChatMessageProps {
   role: "user" | "assistant";
   content: string;
   isStreaming?: boolean;
+  type?: "text" | "action";
+  tool?: string;
+  params?: Record<string, unknown>;
+  success?: boolean;
 }
 
-function ChatMessage({ role, content, isStreaming }: ChatMessageProps) {
+function ChatMessage({
+  role,
+  content,
+  isStreaming,
+  type = "text",
+  tool,
+  params,
+  success,
+}: ChatMessageProps) {
+  // Action messages render as an ActionCard regardless of role
+  if (type === "action" && tool) {
+    return (
+      <div className="flex w-full justify-start">
+        <div className="max-w-[75%] w-full">
+          <ActionCard
+            tool={tool}
+            params={params}
+            result={content}
+            success={success}
+          />
+        </div>
+      </div>
+    );
+  }
+
   const isUser = role === "user";
 
   return (

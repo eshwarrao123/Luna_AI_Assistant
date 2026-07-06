@@ -2,15 +2,23 @@ import { useEffect, useRef, useState } from "react";
 import { useChat } from "./hooks/useChat";
 import ChatMessage from "./components/ChatMessage";
 import MessageInput from "./components/MessageInput";
+import PermissionDialog from "./components/PermissionDialog";
 
 const BACKEND_URL = "http://localhost:8000";
 
 function App() {
-  const { messages, sendMessage, isLoading, resetChat } = useChat();
+  const {
+    messages,
+    sendMessage,
+    isLoading,
+    resetChat,
+    pendingAction,
+    showPermission,
+    handlePermission,
+  } = useChat();
   const [connected, setConnected] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Health check for status indicator
   useEffect(() => {
     let active = true;
     const check = async () => {
@@ -30,7 +38,6 @@ function App() {
     };
   }, []);
 
-  // Auto-scroll to bottom on new content
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages]);
@@ -87,8 +94,15 @@ function App() {
                   key={m.id}
                   role={m.role}
                   content={m.content}
+                  type={m.type}
+                  tool={m.tool}
+                  params={m.params}
+                  success={m.success}
                   isStreaming={
-                    m.role === "assistant" && i === lastIndex && isLoading
+                    m.role === "assistant" &&
+                    m.type !== "action" &&
+                    i === lastIndex &&
+                    isLoading
                   }
                 />
               ))}
@@ -100,6 +114,13 @@ function App() {
           <MessageInput onSend={sendMessage} disabled={isLoading} />
         </div>
       </main>
+
+      <PermissionDialog
+        action={pendingAction}
+        open={showPermission}
+        onAllow={() => handlePermission(true)}
+        onDeny={() => handlePermission(false)}
+      />
     </div>
   );
 }

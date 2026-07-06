@@ -21,13 +21,11 @@ class OllamaClient:
         self,
         messages: list[dict],
         model: str = "qwen2.5:7b",
+        options: dict | None = None,
     ) -> AsyncGenerator[str, None]:
-        """Stream assistant content chunks from Ollama's /api/chat.
-
-        Ollama returns NDJSON lines; we yield only message.content per chunk.
-        On connection failure, yields a single friendly error string.
-        """
         payload = {"model": model, "messages": messages, "stream": True}
+        if options:
+            payload["options"] = options
         try:
             async with httpx.AsyncClient(timeout=None) as client:
                 async with client.stream("POST", self.base_url, json=payload) as resp:
@@ -53,9 +51,9 @@ class OllamaClient:
         self,
         messages: list[dict],
         model: str = "qwen2.5:7b",
+        options: dict | None = None,
     ) -> str:
-        """Non-streaming variant. Returns the full assistant string."""
         parts: list[str] = []
-        async for chunk in self.chat_stream(messages, model=model):
+        async for chunk in self.chat_stream(messages, model=model, options=options):
             parts.append(chunk)
         return "".join(parts)
