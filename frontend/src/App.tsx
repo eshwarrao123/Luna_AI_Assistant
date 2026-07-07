@@ -1,126 +1,134 @@
-import { useEffect, useRef, useState } from "react";
+// /frontend/src/App.tsx
+import { useState, useEffect } from "react";
+import { useSettings } from "./hooks/useSettings";
 import { useChat } from "./hooks/useChat";
+import Sidebar from "./components/Sidebar";
 import ChatMessage from "./components/ChatMessage";
 import MessageInput from "./components/MessageInput";
 import PermissionDialog from "./components/PermissionDialog";
+import PrivacyDashboard from "./components/PrivacyDashboard";
+import Settings from "./components/Settings";
+import Onboarding from "./components/Onboarding";
 
-const BACKEND_URL = "http://localhost:8000";
+type View = "chat" | "privacy" | "settings";
 
 function App() {
+  const { settings, loading: settingsLoading, saveSettings } = useSettings();
   const {
     messages,
     sendMessage,
     isLoading,
-    resetChat,
+    clearConversation,
     pendingAction,
     showPermission,
     handlePermission,
   } = useChat();
-  const [connected, setConnected] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const [currentView, setCurrentView] = useState<View>("chat");
 
   useEffect(() => {
-    let active = true;
-    const check = async () => {
-      try {
-        const res = await fetch(`${BACKEND_URL}/health`);
-        const data = await res.json();
-        if (active) setConnected(data.status === "ok");
-      } catch {
-        if (active) setConnected(false);
-      }
-    };
-    check();
-    const interval = setInterval(check, 5000);
-    return () => {
-      active = false;
-      clearInterval(interval);
-    };
-  }, []);
+    const setAttr = (dark: boolean) =>
+      document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+    if (settings.theme === "dark") { setAttr(true); return; }
+    if (settings.theme === "light") { setAttr(false); return; }
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    setAttr(mq.matches);
+    const handler = (e: MediaQueryListEvent) => setAttr(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, [settings.theme]);
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [messages]);
+    const map: Record<string, string> = { sm: "14px", md: "16px", lg: "18px" };
+    document.documentElement.style.fontSize = map[settings.font_size] ?? "16px";
+  }, [settings.font_size]);
 
-  const lastIndex = messages.length - 1;
+  useEffect(() => {
+    console.log("[App] showPermission =", showPermission, "pendingAction =", pendingAction);
+  }, [showPermission, pendingAction]);
+
+  if (settingsLoading) {
+    return <div className="h-screen w-screen bg-black" />;
+  }
+
+  if (!settings.onboarding_complete) {
+    return (
+      <Onboarding
+        onComplete={(data) => {
+          saveSettings({ ...data, onboarding_complete: true });
+        }}
+      />
+    );
+  }
 
   return (
-    <div className="flex h-screen bg-[#0f0f0f] text-gray-100">
-      {/* Sidebar */}
-      <aside className="w-[260px] shrink-0 bg-[#141414] border-r border-gray-800 flex flex-col">
-        <div className="p-4">
-          <button
-            onClick={resetChat}
-            className="w-full text-left px-3 py-2 rounded-lg bg-[#222] hover:bg-[#2a2a2a] transition-colors text-sm font-medium"
-          >
-            + New Chat
-          </button>
-        </div>
-        <div className="px-4 text-xs uppercase tracking-wide text-gray-500 mb-2">
-          History
-        </div>
-        <div className="flex-1 overflow-y-auto px-3 space-y-1 text-sm text-gray-400">
-          <div className="px-2 py-1.5 rounded hover:bg-[#1c1c1c] cursor-default truncate">
-            Current session
-          </div>
-        </div>
-      </aside>
+    <div className="flex h-screen w-screen bg-black text-white overflow-hidden">
+      <Sidebar
+        currentView={currentView}
+        onNavigate={setCurrentView}
+        onNewChat={() => {
+          clearConversation();
+          setCurrentView("chat");
+        }}
+      />
 
-      {/* Main */}
-      <main className="flex-1 flex flex-col min-w-0">
-        <header className="flex items-center gap-3 px-6 py-4 border-b border-gray-800">
-          <h1 className="text-lg font-semibold">Luna</h1>
-          <span className="flex items-center gap-1.5 text-xs text-gray-400">
-            <span
-              className={`h-2 w-2 rounded-full ${
-                connected ? "bg-green-500" : "bg-gray-600"
-              }`}
-            />
-            {connected ? "Connected" : "Offline"}
-          </span>
-        </header>
+      {currentView === "privacy" && (
+        <PrivacyDashboard onBack={() => setCurrentView("chat")} />
+      )}
 
-        {messages.length === 0 ? (
-          <div className="flex-1 flex items-center justify-center">
-            <p className="text-gray-500 text-lg">
-              What can I help you with today?
-            </p>
-          </div>
-        ) : (
-          <div ref={scrollRef} className="flex-1 overflow-y-auto">
-            <div className="max-w-3xl mx-auto px-6 py-6 space-y-4">
-              {messages.map((m, i) => (
-                <ChatMessage
-                  key={m.id}
-                  role={m.role}
-                  content={m.content}
-                  type={m.type}
-                  tool={m.tool}
-                  params={m.params}
-                  success={m.success}
-                  isStreaming={
-                    m.role === "assistant" &&
-                    m.type !== "action" &&
-                    i === lastIndex &&
-                    isLoading
-                  }
-                />
-              ))}
-            </div>
-          </div>
-        )}
+      {currentView === "settings" && (
+        <Settings
+          onBack={() => setCurrentView("chat")}
+          onNavigatePrivacy={() => setCurrentView("privacy")}
+          settings={settings}
+          saveSettings={saveSettings}
+          loading={settingsLoading}
+        />
+      )}
 
-        <div className="max-w-3xl w-full mx-auto">
+      {currentView === "chat" && (
+        <div className="flex flex-col flex-1 min-w-0">
+          <div className="flex items-center px-6 py-4 border-b border-[#222] shrink-0">
+            <h1 className="text-lg font-semibold text-white">
+              {settings.assistant_name || "Luna"}
+            </h1>
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-6 py-6">
+            {messages.length === 0 ? (
+              <div className="h-full flex items-center justify-center">
+                <p className="text-[#555] text-lg">
+                  Hi {settings.user_name || "there"}, how can I help you today?
+                </p>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-4 max-w-3xl mx-auto">
+                {messages.map((m) => (
+                  <ChatMessage
+                    key={m.id}
+                    role={m.role}
+                    content={m.content}
+                    type={m.type}
+                    tool={m.tool}
+                    params={m.params}
+                    success={m.success}
+                    memories_used={m.memories_used}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+
           <MessageInput onSend={sendMessage} disabled={isLoading} />
         </div>
-      </main>
+      )}
 
-      <PermissionDialog
-        action={pendingAction}
-        open={showPermission}
-        onAllow={() => handlePermission(true)}
-        onDeny={() => handlePermission(false)}
-      />
+      {showPermission && (
+        <PermissionDialog
+          action={pendingAction}
+          onRespond={(allowed: boolean) => handlePermission(allowed)}
+        />
+      )}
     </div>
   );
 }
