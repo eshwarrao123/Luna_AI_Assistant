@@ -27,14 +27,14 @@ function ActionCard({ tool, result, success = true }: ActionCardProps) {
 
   return (
     <div
-      className={`bg-[#1a1a1a]/80 border-l-4 ${
-        success ? "border-indigo-500" : "border-red-500"
-      } rounded-lg p-3 flex gap-3 items-start`}
+      className={`bg-[#111] border-l-2 ${
+        success ? "border-white" : "border-[#ff4444]"
+      } rounded-r-xl p-3 flex gap-3 items-start`}
     >
       <span className="text-xl leading-none mt-0.5">{icon}</span>
       <div className="min-w-0">
-        <div className="text-sm font-medium text-gray-200">{label}</div>
-        <div className="text-sm text-gray-400 whitespace-pre-wrap break-words">
+        <div className="text-sm font-medium text-white">{label}</div>
+        <div className="text-sm text-[#888] whitespace-pre-wrap break-words">
           {result}
         </div>
       </div>
