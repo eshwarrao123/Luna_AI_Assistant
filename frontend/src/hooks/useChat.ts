@@ -5,6 +5,7 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   id: string;
+  isStreaming?: boolean;
   type?: "text" | "action";
   tool?: string;
   params?: Record<string, unknown>;
@@ -73,7 +74,6 @@ export function useChat() {
       const trimmed = text.trim();
       if ((!trimmed && !file) || isLoading) return;
 
-      console.log("[useChat] sendMessage:", { text: trimmed, file: file?.name });
       setError(null);
       setIsLoading(true);
 
@@ -94,21 +94,42 @@ export function useChat() {
       setMessages((prev) => [
         ...prev,
         userMsg,
-        { role: "assistant", content: "", id: assistantId, type: "text" },
+        {
+          role: "assistant",
+          content: "",
+          id: assistantId,
+          type: "text",
+          isStreaming: true,
+        },
       ]);
 
       const appendChunk = (chunk: string) =>
         setMessages((prev) =>
-          prev.map((m) => (m.id === assistantId ? { ...m, content: m.content + chunk } : m))
+          prev.map((m) =>
+            m.id === assistantId
+              ? { ...m, content: m.content + chunk, isStreaming: true }
+              : m
+          )
+        );
+
+      const markStreamingDone = () =>
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId ? { ...m, isStreaming: false } : m
+          )
         );
 
       const markMemories = (keys: string[]) =>
         setMessages((prev) =>
-          prev.map((m) => (m.id === assistantId ? { ...m, memories_used: keys } : m))
+          prev.map((m) =>
+            m.id === assistantId ? { ...m, memories_used: keys } : m
+          )
         );
 
       const dropEmptyAssistant = () =>
-        setMessages((prev) => prev.filter((m) => !(m.id === assistantId && m.content === "")));
+        setMessages((prev) =>
+          prev.filter((m) => !(m.id === assistantId && m.content === ""))
+        );
 
       const consumeSSE = async (res: Response) => {
         if (!res.body) throw new Error("No response body");
@@ -131,13 +152,15 @@ export function useChat() {
             if (!raw) continue;
 
             let data: Record<string, unknown>;
-            try { data = JSON.parse(raw); } catch { continue; }
-
-            console.log("[useChat] SSE event:", data.type, data);
+            try {
+              data = JSON.parse(raw);
+            } catch {
+              continue;
+            }
 
             if (data.type === "permission_request") {
-              console.log("[useChat] >>> permission_request detected, showing dialog");
               dropEmptyAssistant();
+              markStreamingDone();
               setPendingAction(data.action as PendingAction);
               setShowPermission(true);
               setIsLoading(false);
@@ -146,8 +169,10 @@ export function useChat() {
               break;
             } else if (data.type === "memories_used") {
               const keys = data.keys;
-              if (Array.isArray(keys) && keys.length > 0) markMemories(keys as string[]);
+              if (Array.isArray(keys) && keys.length > 0)
+                markMemories(keys as string[]);
             } else if (data.type === "done") {
+              markStreamingDone();
               setIsLoading(false);
             } else if (data.type === "chunk" && typeof data.content === "string") {
               appendChunk(data.content);
@@ -163,18 +188,18 @@ export function useChat() {
           fd.append("message", trimmed);
           fd.append("session_id", sessionIdRef.current);
           fd.append("file", base64ToBlob(file.base64, file.mimeType), file.name);
-          console.log("[useChat] POST /chat/upload");
           res = await fetch(`${BACKEND_URL}/chat/upload`, { method: "POST", body: fd });
         } else {
-          console.log("[useChat] POST /chat/stream");
           res = await fetch(`${BACKEND_URL}/chat/stream`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ message: trimmed, session_id: sessionIdRef.current }),
+            body: JSON.stringify({
+              message: trimmed,
+              session_id: sessionIdRef.current,
+            }),
           });
         }
 
-        console.log("[useChat] response status:", res.status);
         if (!res.ok) {
           const errBody = await res.json().catch(() => ({ detail: res.statusText }));
           throw new Error(String(errBody.detail ?? `HTTP ${res.status}`));
@@ -182,11 +207,12 @@ export function useChat() {
 
         await consumeSSE(res);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : "Could not reach backend.";
-        console.error("[useChat] error:", msg);
+        const msg =
+          err instanceof Error ? err.message : "Could not reach backend.";
         setError(msg);
         appendChunk(`[Luna: ${msg}]`);
       } finally {
+        markStreamingDone();
         setIsLoading(false);
       }
     },
@@ -196,7 +222,6 @@ export function useChat() {
   const handlePermission = useCallback(
     async (allowed: boolean) => {
       const action = pendingAction;
-      console.log("[useChat] handlePermission:", allowed, action);
       setShowPermission(false);
       setPendingAction(null);
       if (!action) return;
@@ -209,13 +234,13 @@ export function useChat() {
             content: "I won't do that without your permission.",
             id: makeId(),
             type: "text",
+            isStreaming: false,
           },
         ]);
         return;
       }
 
       try {
-        console.log("[useChat] POST /execute:", action.action, action.params);
         const res = await fetch(`${BACKEND_URL}/execute`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -226,7 +251,6 @@ export function useChat() {
           }),
         });
         const result = await res.json();
-        console.log("[useChat] /execute result:", result);
         setMessages((prev) => [
           ...prev,
           {
@@ -237,11 +261,11 @@ export function useChat() {
             tool: action.action,
             params: action.params,
             success: result.success,
+            isStreaming: false,
           },
         ]);
       } catch (err) {
         const msg = err instanceof Error ? err.message : "execution failed";
-        console.error("[useChat] execute error:", msg);
         setMessages((prev) => [
           ...prev,
           {
@@ -249,6 +273,7 @@ export function useChat() {
             content: `[Luna: could not execute action: ${msg}]`,
             id: makeId(),
             type: "text",
+            isStreaming: false,
           },
         ]);
       }

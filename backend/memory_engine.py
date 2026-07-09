@@ -25,8 +25,6 @@ OUTPUT FORMAT (JSON array only):
 
 VALID_CATEGORIES = {"fact", "preference", "habit"}
 
-# Patterns that indicate a garbled/garbage key or value produced by a weak
-# extraction pass, mapped to how they should be repaired.
 _GARBAGE_KEY_NAME_PATTERN = re.compile(r"^(pref_|prefers_|preference_)?name$", re.IGNORECASE)
 _GARBLED_NAME_VALUE_PATTERN = re.compile(
     r"(?:tells?_name_|name_is_|my_name_is_|called_)([a-zA-Z]+)", re.IGNORECASE
@@ -35,7 +33,6 @@ _SNAKE_TO_WORDS = re.compile(r"[_\-]+")
 
 
 def _strip_code_fences(text: str) -> str:
-    """Remove ```json / ``` fences (and any other language tag) from a response."""
     text = text.strip()
     text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
@@ -43,33 +40,26 @@ def _strip_code_fences(text: str) -> str:
 
 
 def clean_memory_key(key: str) -> str:
-    """Normalize a possibly-garbage extracted key into a clean, readable key."""
     if not key:
         return key
 
     raw = key.strip()
 
-    # "pref_name", "prefers_name", "preference_name" -> "user_name"
     if _GARBAGE_KEY_NAME_PATTERN.match(raw):
         return "user_name"
 
-    # Any key that starts with "pref_" but isn't a real preference toggle
-    # (e.g. "pref_name_eshwar") and mentions "name" -> user_name
     if raw.lower().startswith("pref_") and "name" in raw.lower():
         return "user_name"
 
-    # Garbled patterns like "tells_name_eshwar" that leaked into the key itself
     match = _GARBLED_NAME_VALUE_PATTERN.search(raw)
     if match:
         return "user_name"
 
-    # Otherwise just normalize to clean snake_case
     words = [w for w in _SNAKE_TO_WORDS.split(raw.lower()) if w]
     return "_".join(words) if words else raw
 
 
 def _extract_name_from_garbage(value: str) -> str | None:
-    """Try to pull an actual name out of a garbled value like 'tells_name_eshwar'."""
     if not value:
         return None
     match = _GARBLED_NAME_VALUE_PATTERN.search(value)
@@ -92,9 +82,6 @@ def _clean_memory_item(item: dict) -> dict | None:
     original_key = key
     key = clean_memory_key(key)
 
-    # If the key was repaired to user_name (from a garbage pref_/name pattern),
-    # the value is likely garbled too — try to recover the real name from
-    # either the value or the original key.
     if key == "user_name" and original_key != "user_name":
         recovered = _extract_name_from_garbage(value) or _extract_name_from_garbage(
             original_key
@@ -102,7 +89,6 @@ def _clean_memory_item(item: dict) -> dict | None:
         if recovered:
             value = recovered
         else:
-            # Fall back to stripping obvious garbage tokens/underscores.
             value = value.replace("_", " ").strip()
             value = re.sub(
                 r"^(tells|name|is|my)\s+", "", value, flags=re.IGNORECASE
@@ -110,8 +96,6 @@ def _clean_memory_item(item: dict) -> dict | None:
             if value:
                 value = value.title()
 
-    # Generic garbled-value repair even when the key itself was already clean
-    # (e.g. key="user_name", value="tells_name_eshwar").
     if key == "user_name":
         recovered = _extract_name_from_garbage(value)
         if recovered:
@@ -131,8 +115,56 @@ def _humanize_key(key: str) -> str:
     return words[0].upper() + words[1:] if words else words
 
 
+_BOOL_TRUE = {"true", "yes", "1"}
+_BOOL_FALSE = {"false", "no", "0"}
+
+
+def _as_bool(value: str) -> bool | None:
+    v = value.strip().lower()
+    if v in _BOOL_TRUE:
+        return True
+    if v in _BOOL_FALSE:
+        return False
+    return None
+
+
+def _memory_to_sentence(m: dict) -> str:
+    key = m["key"]
+    value = m["value"]
+    lower_key = key.lower()
+    bool_val = _as_bool(value)
+
+    if lower_key == "user_name":
+        return f"Their name is {value}."
+
+    if lower_key == "job_title":
+        return f"Their job title is {value}."
+
+    if bool_val is not None and (lower_key.startswith("prefers_") or lower_key.startswith("likes_")):
+        prefix = "prefers_" if lower_key.startswith("prefers_") else "likes_"
+        thing = key[len(prefix):].replace("_", " ").strip()
+        verb = "prefers" if prefix == "prefers_" else "likes"
+        if bool_val:
+            return f"They {verb} {thing}."
+        return f"They do NOT {verb} {thing}."
+
+    if bool_val is not None and lower_key.startswith("works_"):
+        habit = key[len("works_"):].replace("_", " ").strip()
+        if bool_val:
+            return f"They work {habit}."
+        return f"They do not work {habit}."
+
+    if bool_val is not None:
+        cleaned = key.replace("_", " ").strip()
+        if bool_val:
+            return f"They {cleaned}."
+        return f"They do NOT {cleaned}."
+
+    cleaned = key.replace("_", " ").strip()
+    return f"Their {cleaned} is {value}."
+
+
 async def extract_memories(conversation: list[dict], ollama_client) -> list[dict]:
-    """Extract structured facts about the user from recent conversation turns."""
     if not conversation:
         return []
 
@@ -180,7 +212,6 @@ def _extract_json_array(text: str):
     except json.JSONDecodeError:
         pass
 
-    # Fall back to locating the first '[' ... last ']' span.
     start = text.find("[")
     end = text.rfind("]")
     if start == -1 or end == -1 or end <= start:
@@ -229,25 +260,28 @@ def get_relevant_memories(query: str = "", limit: int = 10) -> list[dict]:
 def inject_memories_into_system_prompt(memories: list[dict]) -> str:
     if not memories:
         return (
-            "MEMORY STATE: You currently know NOTHING about this user. "
-            "Do not invent, assume, or guess any personal details. "
-            'If asked what you know, say exactly: "I don\'t know much about you yet. '
-            'Tell me about yourself!"'
+            "You are meeting this user for the first time. You don't know "
+            "anything about them yet. Be friendly and curious — feel free to "
+            "ask about them naturally as the conversation goes on. If they "
+            "ask what you know about them, just say you don't know much yet "
+            "and ask them to tell you a bit about themselves."
         )
-    numbered = "\n".join(
-        f"  {i + 1}. {_humanize_key(m['key'])}: {m['value']}"
-        for i, m in enumerate(memories)
-    )
+
+    sentences = "\n".join(f"- {_memory_to_sentence(m)}" for m in memories)
+
     return (
-        "MEMORY STATE: You have the following VERIFIED FACTS about this user "
-        "from previous conversations. These are the ONLY personal details you "
-        "are allowed to reference. You MUST NOT invent, infer, or hallucinate "
-        "any additional personal information beyond this exact list.\n\n"
-        f"Known facts ({len(memories)}):\n"
-        f"{numbered}\n\n"
-        "When asked what you know about the user, reference ONLY the items "
-        "above, word-for-word. If a topic is not in the list, say you don't "
-        "have information about that."
+        "You know the following about the user from previous conversations:\n"
+        f"{sentences}\n\n"
+        "Use these naturally in conversation, the way a friend who remembers "
+        "things about you would — don't recite them like a list unless asked. "
+        "Only state personal details that are listed above; don't invent or "
+        "guess anything else about the user.\n\n"
+        "CRITICAL: If the user asks about something you don't know, respond "
+        "naturally and just ask them to tell you. NEVER say things like "
+        "\"MEMORY STATE\", \"database\", \"facts not found\", \"not in my "
+        "records\", or any other technical/system language. You are a "
+        "friendly assistant having a conversation, not a computer system "
+        "reporting on its own internals."
     )
 
 

@@ -17,6 +17,12 @@ from database import (
     save_message,
     get_recent_messages,
     get_last_messages,
+    log_activity,
+    get_activity_log,
+    get_activity_stats,
+    grant_permission,
+    get_granted_permissions,
+    TOOL_PERMISSION_CATEGORY,
 )
 from ollama_client import OllamaClient
 from intent import classify_intent
@@ -41,16 +47,19 @@ log = logging.getLogger("luna.main")
 
 BASE_SYSTEM_PROMPT = (
     "You are Luna, a helpful local AI assistant that runs entirely on the "
-    "user's own device. You are concise, warm, and honest.\n\n"
-    "STRICT RULES YOU MUST FOLLOW:\n"
-    "1. You may ONLY state personal facts about the user that appear verbatim "
-    "in the MEMORY STATE block below. No exceptions.\n"
-    "2. You MUST NOT invent, infer, extrapolate, or hallucinate ANY personal "
-    "detail — not hobbies, interests, profession, location, or anything else — "
-    "unless it is explicitly listed in MEMORY STATE.\n"
-    "3. If the user asks what you know about them, enumerate ONLY the items in "
-    "MEMORY STATE and nothing else.\n"
-    "4. If you are uncertain whether a fact is in MEMORY STATE, do NOT say it."
+    "user's own device. You are warm, concise, and talk like a real person — "
+    "never like a computer system or database.\n\n"
+    "RULES:\n"
+    "1. Only state personal facts about the user that are given to you in your "
+    "personal-context notes below. Don't invent, infer, or guess personal "
+    "details beyond what you're told.\n"
+    "2. If the user asks what you know about them, share it conversationally, "
+    "in your own words — not as a list dump unless they ask for one.\n"
+    "3. CRITICAL: If you don't know something about the user, just say so "
+    "naturally and ask them to tell you. NEVER say 'MEMORY STATE', "
+    "'database', 'facts not found', 'not in my records', or any other "
+    "technical/system language — you are a friendly assistant, not a "
+    "computer system reporting on its internals."
 )
 
 SSE_HEADERS = {
@@ -96,6 +105,14 @@ class ExecuteRequest(BaseModel):
     session_id: str = "default"
 
 
+class PermissionResponseRequest(BaseModel):
+    tool: str
+    params: dict = {}
+    approved: bool
+    description: str = ""
+    session_id: str = "default"
+
+
 def _build_system_content() -> tuple[str, list[str]]:
     memories = get_relevant_memories(limit=10)
     memory_block = inject_memories_into_system_prompt(memories)
@@ -134,12 +151,79 @@ async def clear_memories():
     return {"success": True, "deleted": clear_all_memories()}
 
 
+# ── Activity + Permissions endpoints ─────────────────────────────────────────
+
+@app.get("/api/activity")
+async def get_activity():
+    return {"activity": get_activity_log(limit=50), "stats": get_activity_stats()}
+
+
+@app.get("/api/permissions")
+async def get_permissions():
+    return {"permissions": get_granted_permissions()}
+
+
+@app.post("/api/execute-tool")
+async def api_execute_tool(req: ExecuteRequest):
+    """Execute a tool the user has already approved. Logs as 'allowed'."""
+    log.info("[main] /api/execute-tool: tool=%s params=%s", req.tool, req.params)
+    result = execute_tool(req.tool, req.params)
+    save_message(req.session_id, "assistant", result.get("message", ""))
+
+    category = TOOL_PERMISSION_CATEGORY.get(req.tool)
+    if category:
+        grant_permission(category)
+
+    return {"success": result.get("success", False), "message": result.get("message", "")}
+
+
+@app.post("/api/permission-response")
+async def permission_response(req: PermissionResponseRequest):
+    """
+    Called by the frontend when the user clicks Allow/Deny on a permission
+    dialog. If approved, executes the tool and logs 'allowed' + records the
+    permission grant. If denied, logs 'denied' and does not execute anything.
+    """
+    log.info(
+        "[main] /api/permission-response: tool=%s approved=%s", req.tool, req.approved
+    )
+
+    if not req.approved:
+        log_activity(
+            action_type=req.tool,
+            description=req.description or f"User denied '{req.tool}'",
+            status="denied",
+        )
+        return {"success": True, "executed": False, "status": "denied"}
+
+    result = execute_tool(req.tool, req.params)
+    save_message(req.session_id, "assistant", result.get("message", ""))
+
+    category = TOOL_PERMISSION_CATEGORY.get(req.tool)
+    if category:
+        grant_permission(category)
+
+    return {
+        "success": result.get("success", False),
+        "executed": True,
+        "status": "allowed",
+        "message": result.get("message", ""),
+    }
+
+
+# ── Legacy endpoint kept for backward compatibility ──────────────────────────
+
 @app.post("/execute")
 async def execute(req: ExecuteRequest):
     log.info("[main] /execute called: tool=%s params=%s", req.tool, req.params)
     result = execute_tool(req.tool, req.params)
     log.info("[main] /execute result: %s", result)
     save_message(req.session_id, "assistant", result.get("message", ""))
+
+    category = TOOL_PERMISSION_CATEGORY.get(req.tool)
+    if category:
+        grant_permission(category)
+
     return {"success": result.get("success", False), "message": result.get("message", "")}
 
 
@@ -161,6 +245,12 @@ async def chat_stream(req: ChatRequest):
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
         return StreamingResponse(tool_gen(), media_type="text/event-stream", headers=SSE_HEADERS)
+
+    log_activity(
+        action_type="chat",
+        description=req.message[:200],
+        status="completed",
+    )
 
     system_content, memory_keys = _build_system_content()
     log.info("[main] chat path — streaming from Ollama")
@@ -233,6 +323,12 @@ async def chat_upload(
     user_note = f"{message}\n[attached: {filename}]".strip()
     save_message(session_id, "user", user_note)
 
+    log_activity(
+        action_type="file_upload",
+        description=f"Uploaded {filename}",
+        status="completed",
+    )
+
     system_content, memory_keys = _build_system_content()
     history = get_recent_messages(session_id, limit=10)
     base_history = history[:-1] if (history and history[-1]["role"] == "user") else history
@@ -294,3 +390,7 @@ async def chat_upload(
         headers=SSE_HEADERS,
         background=BackgroundTask(_extract_after_stream, session_id),
     )
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
