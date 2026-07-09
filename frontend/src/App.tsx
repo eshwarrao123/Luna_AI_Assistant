@@ -28,7 +28,10 @@ function App() {
 
   useEffect(() => {
     const setAttr = (dark: boolean) =>
-      document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+      document.documentElement.setAttribute(
+        "data-theme",
+        dark ? "dark" : "light"
+      );
     if (settings.theme === "dark") { setAttr(true); return; }
     if (settings.theme === "light") { setAttr(false); return; }
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
@@ -42,10 +45,6 @@ function App() {
     const map: Record<string, string> = { sm: "14px", md: "16px", lg: "18px" };
     document.documentElement.style.fontSize = map[settings.font_size] ?? "16px";
   }, [settings.font_size]);
-
-  useEffect(() => {
-    console.log("[App] showPermission =", showPermission, "pendingAction =", pendingAction);
-  }, [showPermission, pendingAction]);
 
   if (settingsLoading) {
     return <div className="h-screen w-screen bg-black" />;
@@ -103,11 +102,19 @@ function App() {
               </div>
             ) : (
               <div className="flex flex-col gap-4 max-w-3xl mx-auto">
-                {messages.map((m) => (
+                {messages.map((m, i) => (
                   <ChatMessage
                     key={m.id}
                     role={m.role}
                     content={m.content}
+                    // ← THE FIX: pass isStreaming from message data,
+                    //   with isLoading fallback for the last assistant message
+                    isStreaming={
+                      m.isStreaming ??
+                      (isLoading &&
+                        i === messages.length - 1 &&
+                        m.role === "assistant")
+                    }
                     type={m.type}
                     tool={m.tool}
                     params={m.params}

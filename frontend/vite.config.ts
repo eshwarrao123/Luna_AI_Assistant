@@ -1,17 +1,19 @@
-import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
-import * as path from "path";
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
 
 export default defineConfig({
-  root: path.resolve(__dirname),
-  base: "./",
-  plugins: [react()],
-  server: {
-    port: 3000,
-    strictPort: true
-  },
+  plugins: [
+    react(),
+    {
+      name: 'remove-crossorigin',
+      transformIndexHtml(html) {
+        return html.replace(/ crossorigin/g, '')
+      }
+    }
+  ],
+  base: './',
   build: {
-    outDir: path.resolve(__dirname, "../dist"),
-    emptyOutDir: true
+    outDir: '../dist',
+    emptyOutDir: true,
   }
-});
+})
